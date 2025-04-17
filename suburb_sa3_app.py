@@ -2,56 +2,168 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Suburb & SA3 Data Explorer", layout="wide")
+# Set page config
+st.set_page_config(page_title="Property Market Analysis", layout="wide")
 
-st.title("Suburb & SA3 Data Explorer")
+# Custom CSS
+st.markdown("""
+    <style>
+    .main {
+        padding: 0rem 1rem;
+    }
+    .stRadio > div{
+        flex-direction:row;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Load and prepare data
+@st.cache_data
+def load_data():
+    sa3_df = pd.read_excel('Suburb Excel and Radar January 2025.xlsx', sheet_name='SA3')
+    sa3_df.columns = sa3_df.columns.str.strip()
+    
+    # Convert price columns to numeric
+    price_cols = ['Median', '12M Price Change', 'Sale Price Median NoW', 
+                 'Sale Price Median 2M % Change', 'Sale Price Median -12M']
+    for col in price_cols:
+        sa3_df[col] = pd.to_numeric(sa3_df[col], errors='coerce')
+    
+    return sa3_df
 
 # Load data
-sa3_df = pd.read_excel('Suburb Excel and Radar January 2025.xlsx', sheet_name='SA3')
-suburb_df = pd.read_excel('Suburb Excel and Radar January 2025.xlsx', sheet_name='Suburb')
+df = load_data()
 
-sa3_df.columns = sa3_df.columns.str.strip()
-suburb_df.columns = suburb_df.columns.str.strip()
+# Sidebar filters
+st.sidebar.header('Filters')
+selected_sa4 = st.sidebar.multiselect('Select SA4 Region', 
+                                    options=sorted(df['Sa4'].unique()),
+                                    default=df['Sa4'].unique()[0])
 
-st.sidebar.header("Navigation")
-section = st.sidebar.radio("Go to:", ["SA3 Overview", "Suburb Overview", "Custom Analysis"])
+# Filter data based on selection
+filtered_df = df[df['Sa4'].isin(selected_sa4)] if selected_sa4 else df
 
-if section == "SA3 Overview":
-    st.header("SA3 Overview")
-    st.dataframe(sa3_df.head(20))
-    if st.checkbox("Show all columns"):
-        st.write(sa3_df.columns.tolist())
-    # Plot 12M Price Change by SA3
-    if st.button("Plot 12M Price Change by SA3 (Capital Region)"):
-        cap_df = sa3_df[sa3_df['Sa4'].str.lower() == 'capital region']
-        cap_df['12M Price Change'] = pd.to_numeric(cap_df['12M Price Change'], errors='coerce')
-        fig = px.bar(cap_df, y='SA3', x='12M Price Change', orientation='h', title='12M Price Change by SA3 in Capital Region')
-        st.plotly_chart(fig, use_container_width=True)
+# Main layout
+st.title('Property Market Analysis Dashboard')
 
-elif section == "Suburb Overview":
-    st.header("Suburb Overview")
-    st.dataframe(suburb_df.head(20))
-    if st.checkbox("Show all columns"):
-        st.write(suburb_df.columns.tolist())
-    # Plot Median Price by Suburb
-    if st.button("Plot Median Price by Suburb (Top 20)"):
-        suburb_df['Median'] = pd.to_numeric(suburb_df['Median'], errors='coerce')
-        top20 = suburb_df.sort_values('Median', ascending=False).head(20)
-        fig = px.bar(top20, y='Suburb', x='Median', orientation='h', title='Top 20 Suburbs by Median Price')
-        st.plotly_chart(fig, use_container_width=True)
+# Top metrics
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("Median Price", 
+              f"${filtered_df['Median'].median():,.0f}",
+              f"{filtered_df['12M Price Change'].median():.1f}%")
+with col2:
+    st.metric("Avg Sales Turnover", 
+              f"{filtered_df['Sales Turnover'].mean():.1f}%")
+with col3:
+    st.metric("Avg Yield", 
+              f"{filtered_df['Yield'].mean():.1f}%")
+with col4:
+    st.metric("Avg Buy Affordability", 
+              f"{filtered_df['Buy Affordability'].mean():.1f}")
 
-elif section == "Custom Analysis":
-    st.header("Custom Analysis")
-    st.write("Select a sheet and columns to explore:")
-    sheet = st.selectbox("Sheet", ["SA3", "Suburb"])
-    if sheet == "SA3":
-        df = sa3_df
-    else:
-        df = suburb_df
-    col = st.selectbox("Column", df.columns)
-    st.write(df[[col]].head(30))
-    if df[col].dtype in ['float64', 'int64']:
-        st.write(df[col].describe())
-        fig = px.histogram(df, x=col, nbins=30, title="Distribution of " + col)
-        st.plotly_chart(fig, use_container_width=True)
+# Create tabs for different visualizations
+tab1, tab2, tab3 = st.tabs(["Price Analysis", "Radar Analysis", "Market Metrics"])
+
+with tab1:
+    # Price change heatmap
+    st.subheader("2-Month Price Change Heatmap by SA3")
+    fig_heatmap = px.treemap(filtered_df,
+                            path=[px.Constant("All"), 'Sa4', 'SA3'],
+                            values='Median',
+                            color='Sale Price Median 2M % Change',
+                            color_continuous_scale='RdYlBu',
+                            title='Price Change Heatmap')
+    st.plotly_chart(fig_heatmap, use_container_width=True)
+    
+    # Price trends
+    st.subheader("Price Trends")
+    fig_trends = go.Figure()
+    for sa3 in filtered_df['SA3'].unique()[:10]:  # Limit to top 10 for visibility
+        sa3_data = filtered_df[filtered_df['SA3'] == sa3]
+        fig_trends.add_trace(go.Scatter(
+            name=sa3,
+            x=['Now', '-2M', '-12M'],
+            y=[sa3_data['Sale Price Median NoW'].iloc[0],
+               sa3_data['Sale Price Median -2M'].iloc[0],
+               sa3_data['Sale Price Median -12M'].iloc[0]],
+            mode='lines+markers'
+        ))
+    fig_trends.update_layout(title='Price Trends by SA3',
+                           xaxis_title='Time Period',
+                           yaxis_title='Median Price')
+    st.plotly_chart(fig_trends, use_container_width=True)
+
+with tab2:
+    # Radar chart
+    st.subheader("Market Indicators Radar")
+    selected_sa3 = st.selectbox('Select SA3 for Radar Analysis',
+                               options=filtered_df['SA3'].unique())
+    
+    radar_data = filtered_df[filtered_df['SA3'] == selected_sa3].iloc[0]
+    
+    # Prepare radar chart data
+    categories = ['Sales Turnover', 'Yield', 'Buy Affordability',
+                 'Rent Affordability', 'Growth Gap']
+    
+    values = [radar_data['Sales Turnover'],
+              radar_data['Yield'],
+              radar_data['Buy Affordability'],
+              radar_data['Rent Affordability'],
+              radar_data['Growth Gap']]
+    
+    fig_radar = go.Figure()
+    fig_radar.add_trace(go.Scatterpolar(
+        r=values,
+        theta=categories,
+        fill='toself',
+        name=selected_sa3
+    ))
+    
+    fig_radar.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, max(values)]
+            )),
+        showlegend=True
+    )
+    st.plotly_chart(fig_radar, use_container_width=True)
+
+with tab3:
+    # Market metrics analysis
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Sales Turnover vs Yield")
+        fig_scatter = px.scatter(filtered_df,
+                               x='Sales Turnover',
+                               y='Yield',
+                               color='Sa4',
+                               size='Median',
+                               hover_data=['SA3'],
+                               title='Sales Turnover vs Yield')
+        st.plotly_chart(fig_scatter, use_container_width=True)
+    
+    with col2:
+        st.subheader("Affordability Analysis")
+        fig_afford = px.scatter(filtered_df,
+                              x='Buy Affordability',
+                              y='Rent Affordability',
+                              color='Sa4',
+                              size='Median',
+                              hover_data=['SA3'],
+                              title='Buy vs Rent Affordability')
+        st.plotly_chart(fig_afford, use_container_width=True)
+
+# Footer with additional metrics
+st.markdown("---")
+st.subheader("Detailed Metrics Table")
+st.dataframe(filtered_df[['SA3', 'Sa4', 'Median', '12M Price Change', 
+                         'Sales Turnover', 'Yield', 'Buy Affordability',
+                         'Rent Affordability']].sort_values('Median', ascending=False),
+            use_container_width=True)
